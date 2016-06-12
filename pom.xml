@@ -29,8 +29,8 @@
         </dependency>
         <dependency>
             <groupId>com.github.samczsun</groupId>
-            <artifactId>Skype4j</artifactId>
-            <version>cfbc79d115</version>
+            <artifactId>skype4j</artifactId>
+            <version>3b22482389</version>
         </dependency>
     </dependencies>
 

@@ -15,24 +15,22 @@ import com.samczsun.skype4j.events.chat.user.UserAddEvent;
 import com.samczsun.skype4j.events.chat.user.UserRemoveEvent;
 import com.samczsun.skype4j.events.chat.user.action.TopicUpdateEvent;
 import com.samczsun.skype4j.events.contact.ContactRequestEvent;
-import com.samczsun.skype4j.exceptions.ChatNotFoundException;
-import com.samczsun.skype4j.exceptions.ConnectionException;
-import com.samczsun.skype4j.exceptions.InvalidCredentialsException;
-import com.samczsun.skype4j.exceptions.NotParticipatingException;
+import com.samczsun.skype4j.exceptions.*;
 import com.samczsun.skype4j.formatting.Message;
 import com.samczsun.skype4j.formatting.Text;
+import com.samczsun.skype4j.user.Contact;
 import com.samczsun.skype4j.user.User;
 import io.sponges.bot.client.Bot;
 import io.sponges.bot.client.event.events.*;
 import io.sponges.bot.client.protocol.msg.ChannelTopicChangeMessage;
 import io.sponges.bot.client.protocol.msg.ChatMessage;
 import io.sponges.bot.client.protocol.msg.UserJoinMessage;
+import org.json.JSONArray;
 import org.json.JSONObject;
 import org.jsoup.Jsoup;
 
 import java.io.*;
-import java.util.Timer;
-import java.util.TimerTask;
+import java.util.*;
 import java.util.concurrent.atomic.AtomicInteger;
 import java.util.concurrent.atomic.AtomicReference;
 
@@ -40,8 +38,6 @@ public class Client implements Listener {
 
     private static final long RELOG_DELAY = (1000 * 60) * 60; // 60 mins
 
-    private final long start = System.currentTimeMillis();
-    private final AtomicInteger messages = new AtomicInteger(0);
     private final AtomicInteger runs = new AtomicInteger(0);
 
     private final AtomicReference<Skype> skype = new AtomicReference<>();
@@ -77,6 +73,7 @@ public class Client implements Listener {
             } catch (ConnectionException e) {
                 e.printStackTrace();
             }
+            System.exit(-1);
         });
         this.bot.getEventBus().register(SendRawEvent.class, event -> {
             Skype skype = this.skype.get();
@@ -118,6 +115,158 @@ public class Client implements Listener {
                     chat.sendMessage("Could not set topic to  \"" + event.getTopic() + "\": " + e.getMessage());
                 } catch (ConnectionException e1) {
                     e1.printStackTrace();
+                }
+            }
+        });
+        this.bot.getEventBus().register(ChannelMessageReceiveEvent.class, event -> {
+            event.getId();
+            String[] args = event.getMessage().split(" ");
+            switch (args[0].toLowerCase()) {
+                case "test":
+                    event.reply(bot, "Reply for test message.");
+                    break;
+                case "list_users": {
+                    String network = args[1];
+                    Skype skype = this.skype.get();
+                    Chat chat;
+                    try {
+                        chat = skype.getOrLoadChat(network);
+                    } catch (ConnectionException e) {
+                        e.printStackTrace();
+                        break;
+                    } catch (ChatNotFoundException e) {
+                        event.reply(bot, "Invalid network");
+                        break;
+                    }
+                    while (!chat.isLoaded()) {
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                    Collection<User> users = chat.getAllUsers();
+                    JSONArray array = new JSONArray();
+                    users.forEach(user -> array.put(user.getUsername()));
+                    event.reply(bot, array.toString());
+                    break;
+                }
+                case "set_role": {
+                    String network = args[0];
+                    String user = args[1];
+                    String role = args[2];
+                    Skype skype = this.skype.get();
+                    Chat chat;
+                    try {
+                        chat = skype.getOrLoadChat(network);
+                    } catch (ConnectionException e) {
+                        e.printStackTrace();
+                        break;
+                    } catch (ChatNotFoundException e) {
+                        event.reply(bot, "Invalid network");
+                        break;
+                    }
+                    while (!chat.isLoaded()) {
+                        try {
+                            Thread.sleep(100);
+                        } catch (InterruptedException e) {
+                            e.printStackTrace();
+                        }
+                    }
+                    User.Role r = User.Role.valueOf(role.toUpperCase());
+                    try {
+                        chat.getUser(user).setRole(r);
+                    } catch (ConnectionException e) {
+                        e.printStackTrace();
+                        break;
+                    } catch (NoPermissionException e) {
+                        e.printStackTrace();
+                        event.reply(bot, "No perms.");
+                        break;
+                    }
+                    break;
+                }
+            }
+        });
+        this.bot.getEventBus().register(ResourceRequestEvent.class, event -> {
+            String networkId = event.getNetworkId();
+            Skype skype = this.skype.get();
+            Chat chat;
+            try {
+                chat = skype.getOrLoadChat(networkId);
+            } catch (ConnectionException e) {
+                e.printStackTrace();
+                event.replyInvalid(bot);
+                return;
+            } catch (ChatNotFoundException e) {
+                event.replyInvalid(bot);
+                return;
+            }
+            Map<String, String> parameters = new HashMap<>();
+            switch (event.getType()) {
+                case NETWORK: {
+                    String name;
+                    if (chat instanceof GroupChat) {
+                        GroupChat groupChat = (GroupChat) chat;
+                        name = groupChat.getTopic();
+                    } else {
+                        IndividualChat individualChat = (IndividualChat) chat;
+                        name = individualChat.getPartner().getUsername();
+                    }
+                    parameters.put("name", name);
+                    event.reply(bot, parameters);
+                    break;
+                }
+                case CHANNEL: {
+                    parameters.put("id", "skype-dummy-channel");
+                    parameters.put("private", String.valueOf(chat instanceof IndividualChat));
+                    event.reply(bot, parameters);
+                    break;
+                }
+                case USER: {
+                    User user = chat.getUser(event.getUserId());
+                    if (user == null) {
+                        event.replyInvalid(bot);
+                        break;
+                    }
+                    parameters.put("id", user.getUsername());
+                    String username = user.getUsername();
+                    parameters.put("username", username);
+                    boolean admin = user.getRole() == User.Role.ADMIN;
+                    parameters.put("admin", String.valueOf(admin));
+                    boolean op = username.equals("joepwnsall1");
+                    parameters.put("op", String.valueOf(op));
+                    String displayName = null;
+                    try {
+                        displayName = user.getDisplayName();
+                    } catch (ConnectionException e) {
+                        e.printStackTrace();
+                    }
+                    if (displayName != null) parameters.put("display-name", displayName);
+                    Contact contact = null;
+                    try {
+                        contact = user.getContact();
+                    } catch (ConnectionException e) {
+                        e.printStackTrace();
+                    }
+                    if (contact != null) {
+                        String mood = contact.getMood();
+                        if (mood != null) parameters.put("mood", mood);
+                        String profileImage = contact.getAvatarURL();
+                        if (profileImage != null) parameters.put("profile-image", profileImage);
+                        Chat privateChat = null;
+                        try {
+                            privateChat = contact.getPrivateConversation();
+                        } catch (ConnectionException | ChatNotFoundException e) {
+                            e.printStackTrace();
+                        }
+                        if (privateChat != null) {
+                            parameters.put("private-network", privateChat.getIdentity());
+                            parameters.put("private-channel", "skype-dummy-channel");
+                        }
+                    }
+                    event.reply(bot, parameters);
+                    break;
                 }
             }
         });
@@ -192,29 +341,17 @@ public class Client implements Listener {
         ReceivedMessage message = event.getMessage();
         Chat chat = message.getChat();
         String networkId = chat.getIdentity();
-        boolean isPrivate = chat instanceof IndividualChat;
         User user = message.getSender();
         String userId = user.getUsername();
         String username = user.getUsername();
-        boolean admin = user.getRole() == User.Role.ADMIN;
-        boolean op = username.equals("joepwnsall1");
         if (username.equals("spongy.bot") || username.equals("spongybot") || username.equals("ronniepickeringscar")) return;
-        String displayName = null;
-        try {
-            if ((displayName = user.getDisplayName()) == null) {
-                displayName = username;
-            }
-        } catch (ConnectionException e) {
-            e.printStackTrace();
-        }
         long time = message.getSentTime();
         String content = message.getContent().asPlaintext();
         if (content.equalsIgnoreCase("-spongybot unfuck") && username.equals("joepwnsall1")) {
             swap(chat);
             return;
         }
-        ChatMessage chatMessage = new ChatMessage(bot, networkId, "skype-dummy-channel", isPrivate, userId, username,
-                displayName, admin, op, time, content);
+        ChatMessage chatMessage = new ChatMessage(bot, networkId, "skype-dummy-channel", userId, time, content);
         bot.getClient().sendMessage(chatMessage.toString());
     }
 
@@ -228,32 +365,11 @@ public class Client implements Listener {
         String addedUserId = added.getUsername();
         String addedUsername = added.getUsername();
         if (addedUsername.equals("spongy.bot") || addedUsername.equals("spongybot") || addedUsername.equals("ronniepickeringscar")) return;
-        String addedDisplayName = null;
-        try {
-            if ((addedDisplayName = added.getDisplayName()) == null) {
-                addedDisplayName = addedUsername;
-            }
-        } catch (ConnectionException e) {
-            e.printStackTrace();
+        String initiatorUserId = null;
+        if (event.getInitiator() != null) {
+            initiatorUserId = event.getInitiator().getUsername();
         }
-        boolean isAddedAdmin = added.getRole() == User.Role.ADMIN;
-        boolean isAddedOp = addedUsername.equals("joepwnsall1");
-        User initiator = event.getInitiator();
-        String initiatorUserId = initiator.getUsername();
-        String initiatorUsername = initiator.getUsername();
-        String initiatorDisplayName = null;
-        try {
-            if ((initiatorDisplayName = initiator.getDisplayName()) == null) {
-                initiatorDisplayName = initiatorUsername;
-            }
-        } catch (ConnectionException e) {
-            e.printStackTrace();
-        }
-        boolean isInitiatorAdmin = initiator.getRole() == User.Role.ADMIN;
-        boolean isInitiatorOp = initiatorUsername.equals("joepwnsall1");
-        UserJoinMessage message = new UserJoinMessage(bot, networkId, channelId,
-                addedUserId, addedUsername, addedDisplayName, isAddedAdmin, isAddedOp,
-                initiatorUserId, initiatorUsername, initiatorDisplayName, isInitiatorAdmin, isInitiatorOp);
+        UserJoinMessage message = new UserJoinMessage(bot, networkId, channelId, addedUserId, initiatorUserId);
         bot.getClient().sendMessage(message.toString());
     }
 
