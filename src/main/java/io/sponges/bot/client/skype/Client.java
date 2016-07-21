@@ -15,14 +15,17 @@ import com.samczsun.skype4j.events.chat.user.UserAddEvent;
 import com.samczsun.skype4j.events.chat.user.UserRemoveEvent;
 import com.samczsun.skype4j.events.chat.user.action.TopicUpdateEvent;
 import com.samczsun.skype4j.events.contact.ContactRequestEvent;
-import com.samczsun.skype4j.exceptions.*;
+import com.samczsun.skype4j.exceptions.ChatNotFoundException;
+import com.samczsun.skype4j.exceptions.ConnectionException;
+import com.samczsun.skype4j.exceptions.InvalidCredentialsException;
+import com.samczsun.skype4j.exceptions.NotParticipatingException;
 import com.samczsun.skype4j.formatting.Message;
 import com.samczsun.skype4j.formatting.Text;
 import com.samczsun.skype4j.user.Contact;
 import com.samczsun.skype4j.user.User;
 import io.sponges.bot.client.Bot;
 import io.sponges.bot.client.event.events.*;
-import io.sponges.bot.client.protocol.msg.ChannelTopicChangeMessage;
+import io.sponges.bot.client.protocol.msg.ChannelDataUpdateMessage;
 import io.sponges.bot.client.protocol.msg.ChatMessage;
 import io.sponges.bot.client.protocol.msg.UserJoinMessage;
 import org.json.JSONArray;
@@ -90,31 +93,51 @@ public class Client implements Listener {
         this.bot.getEventBus().register(KickUserEvent.class, event -> {
             Skype skype = this.skype.get();
             String network = event.getNetwork();
-            Chat chat = skype.getChat(network);
             String username = event.getUser().getId();
+            Chat chat;
             try {
-                ((GroupChat) chat).kick(username);
+                chat = skype.getOrLoadChat(network);
+            } catch (ConnectionException | ChatNotFoundException e) {
+                e.printStackTrace();
+                return;
+            }
+            if (!(chat instanceof GroupChat)) {
+                System.out.println("must be group chat instead of " + chat.getClass().getName());
+                return;
+            }
+            GroupChat groupChat = (GroupChat) chat;
+            try {
+                groupChat.kick(username);
             } catch (ConnectionException e) {
                 e.printStackTrace();
                 try {
-                    chat.sendMessage("Could not kick \"" + username + "\": " + e.getMessage());
+                    groupChat.sendMessage("Could not kick \"" + username + "\"! Does the bot have admin?");
                 } catch (ConnectionException e1) {
                     e1.printStackTrace();
                 }
             }
         });
-        this.bot.getEventBus().register(ChangeChannelTopicEvent.class, event -> {
-            Skype skype = this.skype.get();
-            String network = event.getNetwork();
-            Chat chat = skype.getChat(network);
-            try {
-                ((GroupChat) chat).setTopic(event.getTopic());
-            } catch (ConnectionException e) {
-                e.printStackTrace();
-                try {
-                    chat.sendMessage("Could not set topic to  \"" + event.getTopic() + "\": " + e.getMessage());
-                } catch (ConnectionException e1) {
-                    e1.printStackTrace();
+        this.bot.getEventBus().register(UpdateChannelDataEvent.class, event -> {
+            switch (event.getDetail()) {
+                case NAME: {
+                    Skype skype = this.skype.get();
+                    String network = event.getNetwork();
+                    Chat chat = skype.getChat(network);
+                    try {
+                        ((GroupChat) chat).setTopic(event.getValue());
+                    } catch (ConnectionException e) {
+                        e.printStackTrace();
+                        try {
+                            chat.sendMessage("Could not set group topic to  \"" + event.getValue() + "\": " + e.getMessage());
+                        } catch (ConnectionException e1) {
+                            e1.printStackTrace();
+                        }
+                    }
+                    break;
+                }
+                case TOPIC: {
+                    System.err.println("Unsupported operation change channel topic detail.");
+                    break;
                 }
             }
         });
@@ -149,41 +172,6 @@ public class Client implements Listener {
                     JSONArray array = new JSONArray();
                     users.forEach(user -> array.put(user.getUsername()));
                     event.reply(bot, array.toString());
-                    break;
-                }
-                case "set_role": {
-                    String network = args[0];
-                    String user = args[1];
-                    String role = args[2];
-                    Skype skype = this.skype.get();
-                    Chat chat;
-                    try {
-                        chat = skype.getOrLoadChat(network);
-                    } catch (ConnectionException e) {
-                        e.printStackTrace();
-                        break;
-                    } catch (ChatNotFoundException e) {
-                        event.reply(bot, "Invalid network");
-                        break;
-                    }
-                    while (!chat.isLoaded()) {
-                        try {
-                            Thread.sleep(100);
-                        } catch (InterruptedException e) {
-                            e.printStackTrace();
-                        }
-                    }
-                    User.Role r = User.Role.valueOf(role.toUpperCase());
-                    try {
-                        chat.getUser(user).setRole(r);
-                    } catch (ConnectionException e) {
-                        e.printStackTrace();
-                        break;
-                    } catch (NoPermissionException e) {
-                        e.printStackTrace();
-                        event.reply(bot, "No perms.");
-                        break;
-                    }
                     break;
                 }
             }
@@ -419,22 +407,13 @@ public class Client implements Listener {
         String channelId = "skype-dummy-channel";
         User user = event.getUser();
         String userId = user.getUsername();
-        String username = user.getUsername();
-        boolean admin = user.getRole() == User.Role.ADMIN;
-        boolean op = username.equalsIgnoreCase("joepwnsall1");
-        if (username.equals("spongy.bot") || username.equalsIgnoreCase("spongybot") || username.equalsIgnoreCase("ronniepickeringscar")) return;
-        String displayName = null;
-        try {
-            if ((displayName = user.getDisplayName()) == null) {
-                displayName = username;
-            }
-        } catch (ConnectionException e) {
-            e.printStackTrace();
-        }
+        if (userId.equals("spongy.bot") || userId.equalsIgnoreCase("spongybot")
+                || userId.equalsIgnoreCase("ronniepickeringscar")) return;
         String oldTopic = event.getOldTopic() != null ? Jsoup.parse(event.getOldTopic()).text() : "null";
         String newTopic = event.getNewTopic() != null ? Jsoup.parse(event.getNewTopic()).text() : "null";
-        ChannelTopicChangeMessage message = new ChannelTopicChangeMessage(bot, networkId, channelId, userId, username,
-                displayName, admin, op, oldTopic, newTopic);
+        UpdateChannelDataEvent.Detail detail = UpdateChannelDataEvent.Detail.NAME;
+        ChannelDataUpdateMessage message = new ChannelDataUpdateMessage(bot, networkId, channelId, userId, detail,
+                oldTopic, newTopic);
         bot.getClient().sendMessage(message.toString());
     }
 
